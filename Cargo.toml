@@ -1,0 +1,28 @@
+[package]
+name = "yed"
+version = "0.1.0"
+edition = "2021"
+description = "A fast, terminal-based YAML editor with vim-like keybindings"
+license = "MIT"
+repository = "https://github.com/yourusername/yed"
+homepage = "https://github.com/yourusername/yed"
+keywords = ["yaml", "editor", "tui", "cli", "vim"]
+categories = ["command-line-utilities", "text-editors"]
+readme = "README.md"
+rust-version = "1.70"
+
+[[bin]]
+name = "yed"
+path = "src/main.rs"
+
+[dependencies]
+ratatui = "0.26"
+crossterm = "0.27"
+yaml-rust2 = "0.8"
+anyhow = "1"
+unicode-width = "0.1"
+clap = { version = "4", features = ["derive"] }
+base64 = "0.22"
+
+[dev-dependencies]
+pretty_assertions = "1"

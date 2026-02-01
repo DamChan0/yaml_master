@@ -1,0 +1,18 @@
+# Sample configuration
+server:
+  host: "localhost"
+  port: 8080
+  tls:
+    enabled: true
+    cert: "certs/server.pem"
+items:
+  - name: "widget"
+    price: 19.99
+    tags:
+      - "blue"
+      - "large"
+  - name: "gadget" # inline comment
+    price: 29.5
+feature_flags:
+  experimental: false
+  banner: "Welcome!"
