@@ -1,0 +1,23 @@
+# yed - Linux x86_64 musl static binary (Docker only, no cross)
+# Usage:
+#   docker build -f docker/Dockerfile.musl -t yed-musl .
+#   docker run --rm -v "%cd%\target:/work/target" yed-musl
+#   Binary: target/x86_64-unknown-linux-musl/release/yed
+
+FROM rust:1.75-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    musl-tools \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN rustup target add x86_64-unknown-linux-musl
+
+WORKDIR /work
+
+COPY Cargo.toml Cargo.lock ./
+COPY src ./src
+
+RUN cargo build --release --target x86_64-unknown-linux-musl
+
+# Copy binary to mounted volume (e.g. -v "${PWD}/target:/work/output")
+CMD ["sh", "-c", "cp -r /work/target/x86_64-unknown-linux-musl /work/output/"]
