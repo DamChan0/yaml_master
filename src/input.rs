@@ -19,10 +19,13 @@ pub enum InputAction {
     EditValue,
     RenameKey,
     AddChild,
+    AddMapToSequence,
     DeleteNode,
+    DeleteLine,
     CopyPath,
     ConfirmYes,
     ConfirmNo,
+    OpenAnother,
     StartSearch,
     SearchNext,
     SearchPrev,
@@ -58,14 +61,19 @@ impl VimInputHandler {
             | Mode::RenameKey
             | Mode::AddKey
             | Mode::AddValue
-            | Mode::SearchInput => return self.handle_input_mode(key),
-            Mode::ConfirmDelete | Mode::ConfirmQuit => return self.handle_confirm(key),
+            | Mode::SearchInput
+            | Mode::RawEditLine => return self.handle_input_mode(key),
+            Mode::ConfirmDelete
+            | Mode::ConfirmQuit
+            | Mode::ConfirmOpenAnother
+            | Mode::ConfirmRawDeleteLine => return self.handle_confirm(key),
             Mode::Normal => {}
         }
 
         match (key.code, key.modifiers) {
             (KeyCode::Char('q'), KeyModifiers::NONE) => Some(InputAction::Quit),
             (KeyCode::Char('s'), KeyModifiers::CONTROL) => Some(InputAction::Save),
+            (KeyCode::Char('o'), KeyModifiers::CONTROL) => Some(InputAction::OpenAnother),
             (KeyCode::Char('j'), KeyModifiers::NONE) | (KeyCode::Down, _) => {
                 Some(InputAction::MoveDown)
             }
@@ -94,7 +102,9 @@ impl VimInputHandler {
             (KeyCode::Char('e'), KeyModifiers::NONE) => Some(InputAction::EditValue),
             (KeyCode::Char('r'), KeyModifiers::NONE) => Some(InputAction::RenameKey),
             (KeyCode::Char('a'), KeyModifiers::NONE) => Some(InputAction::AddChild),
+            (KeyCode::Char('A'), KeyModifiers::SHIFT) => Some(InputAction::AddMapToSequence),
             (KeyCode::Char('d'), KeyModifiers::NONE) => Some(InputAction::DeleteNode),
+            (KeyCode::Delete, KeyModifiers::SHIFT) => Some(InputAction::DeleteLine),
             (KeyCode::Char('y'), KeyModifiers::NONE) => Some(InputAction::CopyPath),
             (KeyCode::Char('n'), KeyModifiers::NONE) => Some(InputAction::SearchNext),
             (KeyCode::Char('N'), KeyModifiers::SHIFT) | (KeyCode::Char('N'), KeyModifiers::NONE) => {

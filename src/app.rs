@@ -23,7 +23,11 @@ pub enum Mode {
     AddValue,
     ConfirmDelete,
     ConfirmQuit,
+    ConfirmOpenAnother,
+    ConfirmRawDeleteLine,
     SearchInput,
+    /// Editing a line in raw view (parse error).
+    RawEditLine,
 }
 
 #[derive(Clone, Debug)]
@@ -101,8 +105,16 @@ pub struct RowHit {
 }
 
 #[derive(Clone, Debug)]
+pub enum PickerEntry {
+    Parent,
+    Dir(PathBuf),
+    File(PathBuf),
+}
+
+#[derive(Clone, Debug)]
 pub struct FilePickerState {
-    pub paths: Vec<PathBuf>,
+    pub current_dir: PathBuf,
+    pub entries: Vec<PickerEntry>,
 }
 
 pub struct App {
@@ -124,11 +136,21 @@ pub struct App {
     pub file_picker: Option<FilePickerState>,
     /// After right-click, ignore 'a'/'r' for a short time (terminal often pastes on right-click).
     pub right_click_ignore_until: Option<Instant>,
+    /// Row index under mouse (for hover highlight).
+    pub hover_row: Option<usize>,
+    /// Parse error when YAML is invalid (file still opened with empty doc).
+    pub parse_error: Option<String>,
+    /// Raw file content when parse failed (so user can edit and fix).
+    pub raw_content: Option<String>,
+    /// File mtime when loaded (for external change detection).
+    pub last_modified: Option<std::time::SystemTime>,
+    /// Last time we checked file on disk (for throttling).
+    pub last_file_check: Option<Instant>,
 }
 
 impl App {
     pub fn new(path: &Path) -> Result<Self> {
-        let model = YamlModel::load(path)?;
+        let (model, parse_error, raw_content) = YamlModel::load_with_error(path)?;
         let mut expanded = HashSet::new();
         expanded.insert(String::new());
         let tree_root = model.build_tree();
@@ -151,17 +173,23 @@ impl App {
             vim: VimInputHandler::new(),
             file_picker: None,
             right_click_ignore_until: None,
+            hover_row: None,
+            parse_error,
+            raw_content,
+            last_modified: std::fs::metadata(path).and_then(|m| m.modified()).ok(),
+            last_file_check: None,
         })
     }
 
-    /// Create app in file picker mode (no file loaded). Lists .yaml/.yml in current directory.
+    /// Create app in file picker mode (no file loaded). Lists current dir with .., subdirs, .yaml/.yml.
     pub fn new_for_picker() -> Result<Self> {
         let model = YamlModel::empty();
         let mut expanded = HashSet::new();
         expanded.insert(String::new());
         let tree_root = model.build_tree();
         let visible = flatten_visible(&tree_root, &expanded, None);
-        let paths = list_yaml_files_in_current_dir()?;
+        let current_dir = std::env::current_dir()?;
+        let entries = list_picker_entries(&current_dir)?;
         Ok(Self {
             model,
             mode: Mode::Normal,
@@ -178,14 +206,99 @@ impl App {
             search_query: None,
             matches: Vec::new(),
             vim: VimInputHandler::new(),
-            file_picker: Some(FilePickerState { paths }),
+            file_picker: Some(FilePickerState {
+                current_dir,
+                entries,
+            }),
             right_click_ignore_until: None,
+            hover_row: None,
+            parse_error: None,
+            raw_content: None,
+            last_modified: None,
+            last_file_check: None,
         })
+    }
+
+    /// In file picker: enter selected item (change dir or open file). Returns true if dir was changed (refresh UI).
+    pub fn picker_enter_selected(&mut self) -> Result<bool> {
+        let picker = match &self.file_picker {
+            Some(p) => p.clone(),
+            None => return Ok(false),
+        };
+        let entry = match picker.entries.get(self.selection) {
+            Some(e) => e.clone(),
+            None => return Ok(false),
+        };
+        match entry {
+            PickerEntry::Parent => {
+                if let Some(parent) = picker.current_dir.parent() {
+                    let parent = parent.to_path_buf();
+                    std::env::set_current_dir(&parent)?;
+                    let entries = list_picker_entries(&parent)?;
+                    if let Some(ref mut fp) = self.file_picker {
+                        fp.current_dir = parent;
+                        fp.entries = entries;
+                    }
+                    self.selection = 0;
+                    return Ok(true);
+                }
+            }
+            PickerEntry::Dir(path) => {
+                if path.is_dir() {
+                    std::env::set_current_dir(&path)?;
+                    let entries = list_picker_entries(&path)?;
+                    if let Some(ref mut fp) = self.file_picker {
+                        fp.current_dir = path;
+                        fp.entries = entries;
+                    }
+                    self.selection = 0;
+                    return Ok(true);
+                }
+            }
+            PickerEntry::File(path) => {
+                if let Err(e) = self.open_file(path) {
+                    self.set_toast(e.to_string());
+                }
+            }
+        }
+        Ok(false)
+    }
+
+    /// Refresh file picker entries (e.g. after changing directory).
+    pub fn picker_refresh(&mut self) -> Result<()> {
+        if let Some(ref mut fp) = self.file_picker {
+            fp.entries = list_picker_entries(&fp.current_dir)?;
+            if self.selection >= fp.entries.len() {
+                self.selection = fp.entries.len().saturating_sub(1);
+            }
+        }
+        Ok(())
+    }
+
+    /// Switch from editor back to file picker (current file's directory).
+    pub fn switch_to_file_picker(&mut self) -> Result<()> {
+        let current_dir = if self.model.file_path().is_empty() {
+            std::env::current_dir()?
+        } else {
+            PathBuf::from(self.model.file_path())
+                .parent()
+                .map(PathBuf::from)
+                .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        };
+        let _ = std::env::set_current_dir(&current_dir);
+        let entries = list_picker_entries(&current_dir)?;
+        self.file_picker = Some(FilePickerState {
+            current_dir,
+            entries,
+        });
+        self.selection = 0;
+        self.mode = Mode::Normal;
+        Ok(())
     }
 
     /// Load a file and switch from file picker to editor.
     pub fn open_file(&mut self, path: PathBuf) -> Result<()> {
-        let model = YamlModel::load(&path)?;
+        let (model, parse_error, raw_content) = YamlModel::load_with_error(&path)?;
         let mut expanded = HashSet::new();
         expanded.insert(String::new());
         let tree_root = model.build_tree();
@@ -206,11 +319,133 @@ impl App {
         self.search_query = None;
         self.matches = Vec::new();
         self.right_click_ignore_until = None;
+        self.hover_row = None;
+        self.parse_error = parse_error;
+        self.raw_content = raw_content;
+        self.last_modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        self.last_file_check = None;
+        Ok(())
+    }
+
+    /// When parse failed, lines of the file for raw edit view.
+    pub fn raw_lines(&self) -> Option<Vec<String>> {
+        self.raw_content
+            .as_ref()
+            .map(|s| s.lines().map(String::from).collect::<Vec<_>>())
+    }
+
+    /// Replace line at index in raw_content (for raw edit).
+    pub fn raw_replace_line(&mut self, line_index: usize, new_line: &str) {
+        if let Some(ref mut raw) = self.raw_content {
+            let mut lines: Vec<String> = raw.lines().map(String::from).collect();
+            if line_index < lines.len() {
+                lines[line_index] = new_line.lines().next().unwrap_or("").to_string();
+                *raw = lines.join("\n");
+            }
+        }
+    }
+
+    /// Remove line at index from raw_content (raw view: d or Shift+Del).
+    pub fn raw_delete_line(&mut self, line_index: usize) {
+        if let Some(ref mut raw) = self.raw_content {
+            let mut lines: Vec<String> = raw.lines().map(String::from).collect();
+            if line_index < lines.len() {
+                lines.remove(line_index);
+                *raw = lines.join("\n");
+                self.dirty = true;
+                if self.selection >= lines.len() && !lines.is_empty() {
+                    self.selection = lines.len() - 1;
+                } else if lines.is_empty() {
+                    self.selection = 0;
+                }
+            }
+        }
+    }
+
+    /// Save raw content to file and re-parse; clear parse_error if successful.
+    pub fn save_raw_and_reparse(&mut self) -> Result<()> {
+        let raw = match &self.raw_content {
+            Some(r) => r.clone(),
+            None => return Ok(()),
+        };
+        let path = PathBuf::from(self.model.file_path());
+        std::fs::write(&path, &raw)?;
+        let (model, parse_error, raw_content) = YamlModel::load_with_error(&path)?;
+        self.model = model;
+        self.parse_error = parse_error.clone();
+        self.raw_content = raw_content;
+        self.dirty = false;
+        if parse_error.is_none() {
+            let mut expanded = HashSet::new();
+            expanded.insert(String::new());
+            self.tree_root = self.model.build_tree();
+            self.visible = flatten_visible(&self.tree_root, &expanded, None);
+            self.selection = 0;
+            self.scroll = 0;
+            self.set_toast("Saved and parsed successfully".to_string());
+        } else {
+            self.set_toast("Saved; parse still has errors".to_string());
+        }
         Ok(())
     }
 
     pub fn is_file_picker(&self) -> bool {
         self.file_picker.is_some()
+    }
+
+    /// If file was modified externally and we have no unsaved changes, reload from disk.
+    pub fn check_and_reload_if_changed(&mut self) -> Result<()> {
+        if self.file_picker.is_some() {
+            return Ok(());
+        }
+        let path_str = self.model.file_path();
+        if path_str.is_empty() {
+            return Ok(());
+        }
+        if self.dirty {
+            return Ok(());
+        }
+        let now = Instant::now();
+        let check_interval = Duration::from_millis(1500);
+        if let Some(last) = self.last_file_check {
+            if now.duration_since(last) < check_interval {
+                return Ok(());
+            }
+        }
+        self.last_file_check = Some(now);
+        let path = PathBuf::from(path_str);
+        let meta = match std::fs::metadata(&path) {
+            Ok(m) => m,
+            Err(_) => return Ok(()),
+        };
+        let modified = match meta.modified() {
+            Ok(t) => t,
+            Err(_) => return Ok(()),
+        };
+        if let Some(last) = self.last_modified {
+            if modified <= last {
+                return Ok(());
+            }
+        }
+        self.last_modified = Some(modified);
+        let (model, parse_error, raw_content) = YamlModel::load_with_error(&path)?;
+        self.model = model;
+        self.parse_error = parse_error;
+        self.raw_content = raw_content;
+        let mut expanded = HashSet::new();
+        expanded.insert(String::new());
+        self.tree_root = self.model.build_tree();
+        self.visible = flatten_visible(&self.tree_root, &expanded, None);
+        if self.raw_content.is_some() {
+            let len = self.raw_lines().map(|l| l.len()).unwrap_or(0);
+            if len > 0 && self.selection >= len {
+                self.selection = len - 1;
+            }
+        } else if self.selection >= self.visible.len() {
+            self.selection = self.visible.len().saturating_sub(1);
+        }
+        self.set_toast("File changed on disk, reloaded".to_string());
+        Ok(())
     }
 
     pub fn rebuild_visible(&mut self) {
@@ -271,16 +506,11 @@ impl App {
         if let Some(ref picker) = self.file_picker {
             match key.code {
                 KeyCode::Enter => {
-                    if self.selection < picker.paths.len() {
-                        let path = picker.paths[self.selection].clone();
-                        if let Err(e) = self.open_file(path) {
-                            self.set_toast(e.to_string());
-                        }
-                    }
+                    let _ = self.picker_enter_selected();
                 }
                 KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
                 KeyCode::Char('j') | KeyCode::Down => {
-                    let max_idx = picker.paths.len().saturating_sub(1);
+                    let max_idx = picker.entries.len().saturating_sub(1);
                     self.selection = (self.selection + 1).min(max_idx);
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
@@ -300,9 +530,16 @@ impl App {
     }
 
     pub fn handle_mouse(&mut self, mouse: MouseEvent, area_height: usize) -> Result<bool> {
+        // Hover: update hover_row from hit_map (works for both tree and file picker).
+        if matches!(mouse.kind, MouseEventKind::Moved) {
+            self.hover_row = self
+                .hit_map
+                .iter()
+                .find(|hit| hit.y == mouse.row)
+                .map(|hit| hit.row_index);
+            return Ok(false);
+        }
         // Block right-click so it does not trigger selection or other actions.
-        // Also set a short ignore window: many terminals paste on right-click, and the first
-        // character ('a' or 'r') would otherwise trigger Add Key / Rename.
         if matches!(
             mouse.kind,
             MouseEventKind::Down(MouseButton::Right) | MouseEventKind::Up(MouseButton::Right)
@@ -317,16 +554,14 @@ impl App {
                     self.selection = self.selection.saturating_sub(1);
                 }
                 MouseEventKind::ScrollDown => {
-                    let max_idx = picker.paths.len().saturating_sub(1);
+                    let max_idx = picker.entries.len().saturating_sub(1);
                     self.selection = (self.selection + 1).min(max_idx);
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
                     if let Some(hit) = self.hit_map.iter().find(|hit| hit.y == mouse.row) {
-                        if hit.row_index < picker.paths.len() {
-                            let path = picker.paths[hit.row_index].clone();
-                            if let Err(e) = self.open_file(path) {
-                                self.set_toast(e.to_string());
-                            }
+                        if hit.row_index < picker.entries.len() {
+                            self.selection = hit.row_index;
+                            let _ = self.picker_enter_selected();
                         }
                     }
                 }
@@ -337,28 +572,30 @@ impl App {
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 self.scroll = self.scroll.saturating_sub(1);
-                let max_scroll = self.visible.len().saturating_sub(area_height);
+                let max_scroll = self.visible_len().saturating_sub(area_height);
                 self.scroll = self.scroll.min(max_scroll);
                 self.clamp_selection(area_height);
             }
             MouseEventKind::ScrollDown => {
                 self.scroll = self.scroll.saturating_add(1);
-                let max_scroll = self.visible.len().saturating_sub(area_height);
+                let max_scroll = self.visible_len().saturating_sub(area_height);
                 self.scroll = self.scroll.min(max_scroll);
                 self.clamp_selection(area_height);
             }
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(hit) = self.hit_map.iter().find(|hit| hit.y == mouse.row) {
                     self.selection = hit.row_index;
-                    let row_data = self.current_row().map(|r| (r.is_container, r.path.dot_path()));
-                    if let Some((is_container, dot_path)) = row_data {
-                        if is_container {
-                            if self.expanded.contains(&dot_path) {
-                                self.expanded.remove(&dot_path);
-                            } else {
-                                self.expanded.insert(dot_path);
+                    if self.raw_content.is_none() {
+                        let row_data = self.current_row().map(|r| (r.is_container, r.path.dot_path()));
+                        if let Some((is_container, dot_path)) = row_data {
+                            if is_container {
+                                if self.expanded.contains(&dot_path) {
+                                    self.expanded.remove(&dot_path);
+                                } else {
+                                    self.expanded.insert(dot_path);
+                                }
+                                self.rebuild_visible();
                             }
-                            self.rebuild_visible();
                         }
                     }
                 }
@@ -369,23 +606,66 @@ impl App {
     }
 
     pub fn apply_action(&mut self, action: InputAction, area_height: usize) -> Result<bool> {
+        let in_raw_mode = self.raw_content.is_some();
         match action {
             InputAction::Quit => return self.request_quit(),
-            InputAction::Save => self.save()?,
-            InputAction::MoveUp => self.move_selection(-1),
-            InputAction::MoveDown => self.move_selection(1),
-            InputAction::JumpTop => self.jump_top(),
-            InputAction::JumpBottom => self.jump_bottom(),
-            InputAction::PageUp => self.page_scroll(-(area_height as isize / 2)),
-            InputAction::PageDown => self.page_scroll(area_height as isize / 2),
+            InputAction::Save => {
+                if in_raw_mode {
+                    self.save_raw_and_reparse()?;
+                } else {
+                    self.save()?;
+                }
+            }
+            InputAction::MoveUp => self.move_selection(area_height, -1),
+            InputAction::MoveDown => self.move_selection(area_height, 1),
+            InputAction::JumpTop => self.jump_top(area_height),
+            InputAction::JumpBottom => self.jump_bottom(area_height),
+            InputAction::PageUp => self.page_scroll(area_height, -(area_height as isize / 2)),
+            InputAction::PageDown => self.page_scroll(area_height, area_height as isize / 2),
             InputAction::JumpLeft => self.scroll = 0,
             InputAction::Collapse => self.collapse_selected(),
             InputAction::Expand => self.expand_selected(),
             InputAction::ToggleExpand => self.toggle_expand(),
-            InputAction::EditValue => self.start_edit_value()?,
-            InputAction::RenameKey => self.start_rename_key()?,
-            InputAction::AddChild => self.start_add_child()?,
-            InputAction::DeleteNode => self.start_delete_node()?,
+            InputAction::EditValue => {
+                if in_raw_mode {
+                    self.start_raw_edit_line()?;
+                } else {
+                    self.start_edit_value()?;
+                }
+            }
+            InputAction::RenameKey => {
+                if self.raw_content.is_some() {
+                    self.set_toast("Key rename: fix parse errors or save to use tree view".to_string());
+                } else {
+                    self.start_rename_key()?;
+                }
+            }
+            InputAction::AddChild => {
+                if self.raw_content.is_some() {
+                    self.set_toast("Add child: fix parse errors or save to use tree view".to_string());
+                } else {
+                    self.start_add_child()?;
+                }
+            }
+            InputAction::AddMapToSequence => {
+                if self.raw_content.is_some() {
+                    self.set_toast("Add object: fix parse errors or save to use tree view".to_string());
+                } else {
+                    self.start_add_map_to_sequence()?;
+                }
+            }
+            InputAction::DeleteNode => {
+                if in_raw_mode {
+                    self.mode = Mode::ConfirmRawDeleteLine;
+                } else {
+                    self.start_delete_node()?;
+                }
+            }
+            InputAction::DeleteLine => {
+                if in_raw_mode {
+                    self.mode = Mode::ConfirmRawDeleteLine;
+                }
+            }
             InputAction::CopyPath => self.copy_current_path(),
             InputAction::ConfirmYes => {
                 if self.confirm_yes()? {
@@ -393,6 +673,13 @@ impl App {
                 }
             }
             InputAction::ConfirmNo => self.confirm_no(),
+            InputAction::OpenAnother => {
+                if self.dirty {
+                    self.mode = Mode::ConfirmOpenAnother;
+                } else {
+                    self.switch_to_file_picker()?;
+                }
+            }
             InputAction::StartSearch => self.start_search(),
             InputAction::SearchNext => self.search_next(),
             InputAction::SearchPrev => self.search_prev(),
@@ -410,7 +697,31 @@ impl App {
         Ok(false)
     }
 
+    fn start_raw_edit_line(&mut self) -> Result<()> {
+        let lines = match self.raw_lines() {
+            Some(l) => l,
+            None => return Ok(()),
+        };
+        if self.selection < lines.len() {
+            self.mode = Mode::RawEditLine;
+            self.input.set(lines[self.selection].clone());
+        }
+        Ok(())
+    }
+
+    fn visible_len(&self) -> usize {
+        if self.raw_content.is_some() {
+            self.raw_lines().map(|l| l.len()).unwrap_or(0)
+        } else {
+            self.visible.len()
+        }
+    }
+
     fn ensure_visible(&mut self, area_height: usize) {
+        let len = self.visible_len();
+        if len == 0 {
+            return;
+        }
         if self.selection < self.scroll {
             self.scroll = self.selection;
         } else if self.selection >= self.scroll + area_height {
@@ -419,37 +730,43 @@ impl App {
     }
 
     fn clamp_selection(&mut self, area_height: usize) {
+        let len = self.visible_len();
         if self.selection < self.scroll {
             self.selection = self.scroll;
         } else if self.selection >= self.scroll + area_height {
             self.selection = self.scroll + area_height.saturating_sub(1);
-            if self.selection >= self.visible.len() {
-                self.selection = self.visible.len().saturating_sub(1);
+            if self.selection >= len {
+                self.selection = len.saturating_sub(1);
             }
         }
     }
 
-    fn move_selection(&mut self, delta: isize) {
-        if self.visible.is_empty() {
+    fn move_selection(&mut self, area_height: usize, delta: isize) {
+        let len = self.visible_len();
+        if len == 0 {
             return;
         }
         let next = self.selection as isize + delta;
-        self.selection = next.clamp(0, self.visible.len().saturating_sub(1) as isize) as usize;
+        self.selection = next.clamp(0, len.saturating_sub(1) as isize) as usize;
+        self.ensure_visible(area_height);
     }
 
-    fn jump_top(&mut self) {
+    fn jump_top(&mut self, _area_height: usize) {
         self.selection = 0;
     }
 
-    fn jump_bottom(&mut self) {
-        if !self.visible.is_empty() {
-            self.selection = self.visible.len() - 1;
+    fn jump_bottom(&mut self, _area_height: usize) {
+        let len = self.visible_len();
+        if len > 0 {
+            self.selection = len - 1;
         }
     }
 
-    fn page_scroll(&mut self, delta: isize) {
+    fn page_scroll(&mut self, area_height: usize, delta: isize) {
+        let len = self.visible_len();
         let new = (self.selection as isize + delta).max(0);
-        self.selection = new.min(self.visible.len().saturating_sub(1) as isize) as usize;
+        self.selection = new.min(len.saturating_sub(1) as isize) as usize;
+        self.ensure_visible(area_height);
     }
 
     fn expand_selected(&mut self) {
@@ -508,12 +825,15 @@ impl App {
                 .last()
                 .map(|seg| matches!(seg, crate::yaml_model::PathSegment::Key(_)))
                 == Some(true);
-            (is_key, r.display_key.clone())
+            let is_root = r.path.0.is_empty();
+            (is_key, is_root, r.display_key.clone())
         });
-        if let Some((is_key, display_key)) = row_data {
+        if let Some((is_key, is_root, display_key)) = row_data {
             if is_key {
                 self.mode = Mode::RenameKey;
                 self.input.set(display_key);
+            } else if is_root {
+                self.set_toast("Root has no key to rename".to_string());
             } else {
                 self.set_toast("Cannot rename sequence item".to_string());
             }
@@ -522,15 +842,57 @@ impl App {
     }
 
     fn start_add_child(&mut self) -> Result<()> {
-        if let Some(row) = self.current_row() {
-            if row.node_type == NodeType::Map {
+        let row_data = self.current_row().map(|r| {
+            let is_mapping_key = r
+                .path
+                .0
+                .last()
+                .map(|seg| matches!(seg, crate::yaml_model::PathSegment::Key(_)))
+                == Some(true);
+            (r.path.clone(), r.node_type.clone(), is_mapping_key)
+        });
+        if let Some((path, node_type, is_mapping_key)) = row_data {
+            if node_type == NodeType::Map {
                 self.mode = Mode::AddKey;
                 self.input.set(String::new());
-            } else if row.node_type == NodeType::Seq {
+            } else if node_type == NodeType::Seq {
                 self.mode = Mode::AddValue;
                 self.input.set(String::new());
+            } else if is_mapping_key {
+                if let Err(e) = self.model.convert_to_empty_map(&path) {
+                    self.set_toast(e.to_string());
+                } else {
+                    self.dirty = true;
+                    self.rebuild_visible();
+                    self.mode = Mode::AddKey;
+                    self.input.set(String::new());
+                }
             } else {
                 self.set_toast("Cannot add child to scalar".to_string());
+            }
+        }
+        Ok(())
+    }
+
+    /// Add an empty map to the current sequence, then start AddKey on the new element.
+    /// Use Shift+A on a sequence (list) to add a new object and type its first key.
+    fn start_add_map_to_sequence(&mut self) -> Result<()> {
+        let path = self.current_row().map(|r| (r.path.clone(), r.node_type.clone()));
+        if let Some((path, node_type)) = path {
+            if node_type != NodeType::Seq {
+                self.set_toast("Shift+A: only on a sequence (list). Use 'a' to add a value.".to_string());
+                return Ok(());
+            }
+            match self.model.add_sequence_empty_map(&path) {
+                Ok(new_path) => {
+                    self.dirty = true;
+                    self.expanded.insert(path.dot_path());
+                    self.rebuild_visible();
+                    self.restore_selection(Some(new_path));
+                    self.mode = Mode::AddKey;
+                    self.input.set(String::new());
+                }
+                Err(e) => self.set_toast(e.to_string()),
             }
         }
         Ok(())
@@ -572,6 +934,16 @@ impl App {
                 Ok(false)
             }
             Mode::ConfirmQuit => Ok(true),
+            Mode::ConfirmOpenAnother => {
+                self.switch_to_file_picker()?;
+                self.mode = Mode::Normal;
+                Ok(false)
+            }
+            Mode::ConfirmRawDeleteLine => {
+                self.raw_delete_line(self.selection);
+                self.mode = Mode::Normal;
+                Ok(false)
+            }
             _ => Ok(false),
         }
     }
@@ -623,38 +995,72 @@ impl App {
             Mode::RenameKey => {
                 let path = self.current_row().map(|r| r.path.clone());
                 if let Some(path) = path {
-                    self.model.rename_key(&path, &self.input.text)?;
-                    self.dirty = true;
+                    let key_trimmed = self.input.text.trim();
+                    if key_trimmed.is_empty() {
+                        self.set_toast("Key cannot be empty".to_string());
+                    } else if let Err(e) = self.model.rename_key(&path, key_trimmed) {
+                        self.set_toast(e.to_string());
+                    } else {
+                        self.dirty = true;
+                        self.mode = Mode::Normal;
+                        self.rebuild_visible();
+                    }
+                } else {
+                    self.mode = Mode::Normal;
                 }
-                self.mode = Mode::Normal;
-                self.rebuild_visible();
             }
             Mode::AddKey => {
-                self.pending_key = Some(self.input.text.clone());
-                self.mode = Mode::AddValue;
-                self.input.set(String::new());
+                let key_trimmed = self.input.text.trim().to_string();
+                if key_trimmed.is_empty() {
+                    self.set_toast("Key cannot be empty".to_string());
+                } else {
+                    self.pending_key = Some(key_trimmed);
+                    self.mode = Mode::AddValue;
+                    self.input.set(String::new());
+                }
             }
             Mode::AddValue => {
                 let row_data = self
                     .current_row()
                     .map(|r| (r.path.clone(), r.node_type.clone()));
                 if let Some((path, node_type)) = row_data {
-                    let parsed = parse_scalar_input(&self.input.text)?;
-                    if node_type == NodeType::Map {
-                        if let Some(key) = self.pending_key.take() {
-                            self.model.add_mapping_child(&path, &key, parsed)?;
+                    match parse_scalar_input(self.input.text.trim()) {
+                        Ok(parsed) => {
+                            if node_type == NodeType::Map {
+                                if let Some(key) = self.pending_key.take() {
+                                    if let Err(e) =
+                                        self.model.add_mapping_child(&path, key.trim(), parsed)
+                                    {
+                                        self.set_toast(e.to_string());
+                                    } else {
+                                        self.dirty = true;
+                                        self.mode = Mode::Normal;
+                                        self.rebuild_visible();
+                                    }
+                                } else {
+                                    self.mode = Mode::Normal;
+                                }
+                            } else if node_type == NodeType::Seq {
+                                if let Err(e) = self.model.add_sequence_value(&path, parsed) {
+                                    self.set_toast(e.to_string());
+                                } else {
+                                    self.dirty = true;
+                                    self.mode = Mode::Normal;
+                                    self.rebuild_visible();
+                                }
+                            } else {
+                                self.mode = Mode::Normal;
+                            }
                         }
-                    } else if node_type == NodeType::Seq {
-                        self.model.add_sequence_value(&path, parsed)?;
+                        Err(e) => self.set_toast(e.to_string()),
                     }
-                    self.dirty = true;
+                } else {
+                    self.mode = Mode::Normal;
                 }
-                self.mode = Mode::Normal;
-                self.rebuild_visible();
             }
             Mode::SearchInput => {
-                let query = self.input.text.clone();
-                self.search_query = if query.is_empty() { None } else { Some(query) };
+                let query = self.input.text.trim().to_string();
+                self.search_query = if query.is_empty() { None } else { Some(query.clone()) };
                 self.mode = Mode::Normal;
                 self.rebuild_visible();
                 self.matches = self
@@ -674,6 +1080,17 @@ impl App {
                         })
                     })
                     .collect();
+                if !query.is_empty() && self.matches.is_empty() {
+                    self.set_toast("No matches found".to_string());
+                } else if !self.matches.is_empty() {
+                    self.selection = self.matches[0];
+                }
+            }
+            Mode::RawEditLine => {
+                let text = self.input.text.clone();
+                self.raw_replace_line(self.selection, &text);
+                self.mode = Mode::Normal;
+                self.dirty = true;
             }
             _ => {}
         }
@@ -703,6 +1120,19 @@ impl App {
     }
 
     pub fn status_fields(&self) -> (String, usize, String, String) {
+        if let Some(lines) = self.raw_lines() {
+            if self.selection < lines.len() {
+                let line_no = self.selection + 1;
+                let content = lines[self.selection].clone();
+                return (
+                    format!("Line {}", line_no),
+                    self.selection,
+                    "raw".to_string(),
+                    content.chars().take(40).collect::<String>(),
+                );
+            }
+            return (String::new(), 0, String::new(), String::new());
+        }
         if let Some(row) = self.current_row() {
             (
                 row.path.dot_path(),
@@ -728,22 +1158,28 @@ impl App {
     }
 }
 
-fn list_yaml_files_in_current_dir() -> Result<Vec<PathBuf>> {
-    let current = std::env::current_dir()?;
-    let mut paths: Vec<PathBuf> = fs::read_dir(current)?
-        .filter_map(|e| e.ok())
-        .filter_map(|e| {
-            let p = e.path();
-            if p.is_file() {
-                let ext = p.extension()?;
-                let ext = ext.to_str()?;
-                if ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml") {
-                    return Some(p);
-                }
+fn list_picker_entries(dir: &Path) -> Result<Vec<PickerEntry>> {
+    let mut entries = Vec::new();
+    if dir.parent().is_some() {
+        entries.push(PickerEntry::Parent);
+    }
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut files: Vec<PathBuf> = Vec::new();
+    for e in fs::read_dir(dir)? {
+        let e = e?;
+        let p = e.path();
+        if p.is_dir() {
+            dirs.push(p);
+        } else if p.is_file() {
+            let ext = p.extension().and_then(|e| e.to_str());
+            if ext.map(|e| e.eq_ignore_ascii_case("yaml") || e.eq_ignore_ascii_case("yml")) == Some(true) {
+                files.push(p);
             }
-            None
-        })
-        .collect();
-    paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
-    Ok(paths)
+        }
+    }
+    dirs.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    entries.extend(dirs.into_iter().map(PickerEntry::Dir));
+    entries.extend(files.into_iter().map(PickerEntry::File));
+    Ok(entries)
 }

@@ -9,10 +9,21 @@ items:
   - tags:
       - blue
       - large
-    "namego build --release ": 19.99
-    ㅇㄴㅁㄹㄴㅇㅇsdafnamego build --release ㅁ: widget
   - name: gadget
     price: 29.5
 feature_flags:
-  experimental: false
-  banner: Welcome!server.host
+  - experimental: true
+  - banner: Welcome!server.host
+test:
+  - name:
+      - name2: 0
+      - name3: 1
+        name4: 0
+        "": a
+test2:
+  test3:
+    test4:
+      test5: test
+      test6: tset
+  test55:
+    test77: ~

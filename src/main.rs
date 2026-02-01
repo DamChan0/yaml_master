@@ -79,6 +79,9 @@ fn run_app(
     };
     loop {
         app.update_toast();
+        if let Err(err) = app.check_and_reload_if_changed() {
+            app.set_toast(err.to_string());
+        }
         terminal.draw(|frame| {
             let hits = ui::draw(frame, &mut app);
             app.update_hit_map(hits);

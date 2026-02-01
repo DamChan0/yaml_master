@@ -1,0 +1,14 @@
+# 기본 cross 이미지의 glibc가 오래되어 빌드 스크립트에서
+# GLIBC_2.28/2.29/2.30 오류가 납니다. Debian Bookworm 기반 커스텀 이미지 사용.
+
+[target.x86_64-unknown-linux-musl.dockerfile]
+file = "docker/Dockerfile.cross-musl"
+context = "."
+
+[target.aarch64-unknown-linux-musl.dockerfile]
+file = "docker/Dockerfile.cross-musl-aarch64"
+context = "."
+
+[target.armv7-unknown-linux-musleabihf.dockerfile]
+file = "docker/Dockerfile.cross-musl-armv7"
+context = "."

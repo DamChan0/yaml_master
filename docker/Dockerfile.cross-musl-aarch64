@@ -1,0 +1,19 @@
+# cross용 aarch64-unknown-linux-musl (glibc 2.31+ 로 빌드 스크립트 GLIBC 오류 방지)
+# musl.cc 툴체인 사용.
+
+FROM rust:1.75-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -sSL https://musl.cc/aarch64-linux-musl-cross.tgz | tar xz -C /usr/local \
+    && ln -sf /usr/local/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc /usr/local/bin/
+
+ENV PATH="/usr/local/aarch64-linux-musl-cross/bin:${PATH}" \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER="aarch64-linux-musl-gcc" \
+    CC_aarch64_unknown_linux_musl="aarch64-linux-musl-gcc" \
+    CXX_aarch64_unknown_linux_musl="aarch64-linux-musl-g++" \
+    AR_aarch64_unknown_linux_musl="aarch64-linux-musl-ar"
+
+RUN rustup target add aarch64-unknown-linux-musl

@@ -98,13 +98,41 @@ pub struct YamlModel {
 
 impl YamlModel {
     pub fn load(path: &Path) -> Result<Self> {
+        let (model, err, _) = Self::load_with_error(path)?;
+        if let Some(e) = err {
+            return Err(anyhow!("{}", e));
+        }
+        Ok(model)
+    }
+
+    /// Load YAML; on parse error returns empty doc, error message, and raw content so the file can be edited.
+    pub fn load_with_error(path: &Path) -> Result<(Self, Option<String>, Option<String>)> {
         let input = std::fs::read_to_string(path)?;
-        let docs = YamlLoader::load_from_str(&input)?;
-        let doc = docs.into_iter().next().unwrap_or(Yaml::Null);
-        Ok(Self {
-            doc,
-            path: path.display().to_string(),
-        })
+        let path_str = path.display().to_string();
+        match YamlLoader::load_from_str(&input) {
+            Ok(docs) => {
+                let doc = docs.into_iter().next().unwrap_or(Yaml::Null);
+                Ok((
+                    Self {
+                        doc,
+                        path: path_str,
+                    },
+                    None,
+                    None,
+                ))
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                Ok((
+                    Self {
+                        doc: Yaml::Null,
+                        path: path_str.clone(),
+                    },
+                    Some(err_msg),
+                    Some(input),
+                ))
+            }
+        }
     }
 
     /// Empty model for file picker state (no file loaded yet).
@@ -113,6 +141,11 @@ impl YamlModel {
             doc: Yaml::Null,
             path: String::new(),
         }
+    }
+
+    /// Path of the currently loaded file (for "open another file").
+    pub fn file_path(&self) -> &str {
+        &self.path
     }
 
     pub fn save(&self) -> Result<()> {
@@ -206,6 +239,35 @@ impl YamlModel {
         }
     }
 
+    /// Push an empty map to the sequence at path; returns the path of the new element.
+    /// Use when the user wants to add a new "object" (key-value pair) to a list.
+    pub fn add_sequence_empty_map(&mut self, path: &NodePath) -> Result<NodePath> {
+        let node = get_node_mut(self.root_mut(), path)?;
+        match node {
+            Yaml::Array(seq) => {
+                let empty = YamlLoader::load_from_str("{}")?
+                    .into_iter()
+                    .next()
+                    .unwrap_or(Yaml::Null);
+                seq.push(empty);
+                Ok(path.child_index(seq.len() - 1))
+            }
+            _ => Err(anyhow!("Node is not a sequence")),
+        }
+    }
+
+    /// Convert the node at path to an empty map so child keys can be added.
+    /// Use when the node is null or scalar and the user wants to add children.
+    pub fn convert_to_empty_map(&mut self, path: &NodePath) -> Result<()> {
+        let node = get_node_mut(self.root_mut(), path)?;
+        let empty = YamlLoader::load_from_str("{}")?
+            .into_iter()
+            .next()
+            .unwrap_or(Yaml::Null);
+        *node = empty;
+        Ok(())
+    }
+
     pub fn delete_node(&mut self, path: &NodePath) -> Result<()> {
         if path.0.is_empty() {
             return Err(anyhow!("Cannot delete root"));
@@ -252,7 +314,8 @@ fn build_tree_node(path: &NodePath, key: String, node: &Yaml) -> TreeNode {
             let mut children = Vec::new();
             for (idx, item) in seq.iter().enumerate() {
                 let child_path = path.child_index(idx);
-                children.push(build_tree_node(&child_path, idx.to_string(), item));
+                let display_key = display_key_for_yaml(item);
+                children.push(build_tree_node(&child_path, display_key, item));
             }
             TreeNode {
                 path: path.clone(),
@@ -276,6 +339,29 @@ fn yaml_key_to_string(key: &Yaml) -> Option<String> {
     match key {
         Yaml::String(value) => Some(value.clone()),
         _ => None,
+    }
+}
+
+/// Display label for an array element: first key if object, else value preview. No index (0, 1, ...).
+fn display_key_for_yaml(node: &Yaml) -> String {
+    match node {
+        Yaml::Hash(map) => map
+            .iter()
+            .next()
+            .and_then(|(k, _)| yaml_key_to_string(k))
+            .unwrap_or_else(|| "{}".to_string()),
+        Yaml::Array(seq) => seq
+            .first()
+            .map(|first| display_key_for_yaml(first))
+            .unwrap_or_else(|| "[]".to_string()),
+        _ => {
+            let preview = scalar_preview(node);
+            if preview.len() > 40 {
+                format!("{}…", preview.chars().take(39).collect::<String>())
+            } else {
+                preview
+            }
+        }
     }
 }
 
@@ -352,6 +438,9 @@ pub enum ScalarNumber {
 
 pub fn parse_scalar_input(input: &str) -> Result<ScalarValue> {
     let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Ok(ScalarValue::Null);
+    }
     if trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2 {
         let inner = &trimmed[1..trimmed.len() - 1];
         return Ok(ScalarValue::String(unescape_yaml_string(inner)));
@@ -369,7 +458,8 @@ pub fn parse_scalar_input(input: &str) -> Result<ScalarValue> {
     if let Ok(value) = trimmed.parse::<f64>() {
         return Ok(ScalarValue::Number(ScalarNumber::Float(value)));
     }
-    Err(anyhow!("String values must be wrapped in double quotes"))
+    // YAML allows unquoted strings; treat remaining input as string
+    Ok(ScalarValue::String(trimmed.to_string()))
 }
 
 fn scalar_to_yaml(value: ScalarValue) -> Yaml {
@@ -454,6 +544,19 @@ fn walk_visible(
     depth: usize,
     rows: &mut Vec<VisibleRow>,
 ) {
+    // Show root as a selectable row when it's a Map or Seq so user can add top-level keys/items.
+    if node.path.0.is_empty()
+        && matches!(node.node_type, NodeType::Map | NodeType::Seq)
+    {
+        rows.push(VisibleRow {
+            path: node.path.clone(),
+            depth: 0,
+            display_key: "(root)".to_string(),
+            display_value_preview: String::new(),
+            node_type: node.node_type.clone(),
+            is_container: true,
+        });
+    }
     if !node.path.0.is_empty() {
         if let Some(q) = query {
             let dot = node.path.dot_path();
@@ -540,6 +643,11 @@ mod tests {
             parse_scalar_input("3.14").unwrap(),
             ScalarValue::Number(ScalarNumber::Float(3.14))
         );
-        assert!(parse_scalar_input("hello").is_err());
+        assert_eq!(
+            parse_scalar_input("hello").unwrap(),
+            ScalarValue::String("hello".into())
+        );
+        assert_eq!(parse_scalar_input("").unwrap(), ScalarValue::Null);
+        assert_eq!(parse_scalar_input("   ").unwrap(), ScalarValue::Null);
     }
 }

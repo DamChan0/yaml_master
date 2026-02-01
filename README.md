@@ -30,34 +30,14 @@ cargo build --release
 # The binary will be at target/release/yaml_master (or yaml_master.exe on Windows)
 ```
 
-### Using Cargo
-
-```bash
-cargo install yaml_master
-```
-
-### Pre-built Binaries
-
-Download the latest release from the [Releases](https://github.com/DamChan0/yaml_master/releases) page.
-
-| Platform | Architecture | Download | Typical Use |
-|----------|--------------|----------|-------------|
-| Linux | x86_64 (musl) | `yaml_master-linux-x86_64-musl` | PC, servers |
-| Linux | aarch64 (musl) | `yed-linux-aarch64-musl` | Raspberry Pi 4/5, ARM servers |
-| Linux | aarch64 (gnu) | `yaml_master-linux-aarch64-gnu` | ARM64 with glibc |
-| Linux | armv7 (musl) | `yaml_master-linux-armv7-musl` | Raspberry Pi 3, 32-bit ARM |
-| Windows | x86_64 | `yaml_master-windows-x86_64.exe` | Windows PC |
-| macOS | x86_64 | `yed-macos-x86_64` | Intel Mac |
-| macOS | aarch64 (Apple Silicon) | `yed-macos-aarch64` | M1/M2/M3 Mac |
-
 ## Usage
 
 ```bash
 # Open a YAML file
-yed config.yaml
+yaml_master config.yaml
 
 # Open with full path
-yed /path/to/your/file.yaml
+yaml_master /path/to/your/file.yaml
 ```
 
 ## Keybindings
@@ -262,78 +242,6 @@ If you cannot update Rust, use an older cross version:
 cargo install cross --version 0.2.4
 ```
 
-### Building Linux/ARM binaries from Windows
-
-**`cross` on Windows requires Docker Desktop** (or another Docker engine) to be installed and running. Without Docker, you will see errors like `toolchain 'stable-x86_64-unknown-linux-gnu' may not be able to run on this system`.
-
-**Options:**
-
-1. **Use GitHub Actions (recommended)**  
-   Push a tag (e.g. `v0.1.0`); the workflow will build all targets (including Linux and ARM) and attach them to the Release. No local cross-compilation needed.
-
-2. **Use WSL2 (Windows Subsystem for Linux)**  
-   Install WSL2, open a Linux shell, install Rust and Docker there, then run `cross build ...` as in the “Cross-compilation with Docker” section above.
-
-3. **Use Docker Desktop on Windows**  
-   Install [Docker Desktop](https://www.docker.com/products/docker-desktop/), start it, then in PowerShell or CMD:
-   ```powershell
-   cargo install cross
-   cross build --release --target aarch64-unknown-linux-musl
-   ```
-
-4. **Build on the ARM device**  
-   On a Raspberry Pi or other ARM machine, clone the repo and run `cargo build --release` (see “ARM Support” below).
-
-## Configuration
-
-Currently, yed does not require a configuration file. All settings are controlled via command-line arguments and keyboard shortcuts.
-
-## Troubleshooting
-
-### "Failed to copy path" error
-
-Clipboard functionality requires:
-- **Linux**: `xclip` or `xsel` installed, or running in a Wayland session with `wl-copy`
-- **Windows**: Works out of the box
-- **macOS**: Works out of the box
-
-```bash
-# Ubuntu/Debian
-sudo apt-get install xclip
-
-# Fedora
-sudo dnf install xclip
-
-# Arch Linux
-sudo pacman -S xclip
-```
-
-### Terminal compatibility
-
-yed requires a terminal that supports:
-- 256 colors (recommended)
-- Mouse events
-- Alternate screen buffer
-
-Tested terminals:
-- Windows Terminal ✓
-- iTerm2 ✓
-- Alacritty ✓
-- Kitty ✓
-- GNOME Terminal ✓
-- Konsole ✓
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add some amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 

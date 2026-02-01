@@ -1,4 +1,4 @@
-# yed 빌드 가이드 (x86 / ARM, musl, Docker)
+# yaml_master 빌드 가이드 (x86 / ARM, musl, Docker)
 
 ---
 
@@ -25,7 +25,7 @@ cargo install cross
 cross build --release --target x86_64-unknown-linux-musl
 ```
 
-바이너리 위치: `target\x86_64-unknown-linux-musl\release\yed`
+바이너리 위치: `target\x86_64-unknown-linux-musl\release\yaml_master`
 
 **ARM용도 빌드하려면:**
 
@@ -37,8 +37,8 @@ cross build --release --target aarch64-unknown-linux-musl
 cross build --release --target armv7-unknown-linux-musleabihf
 ```
 
-- `target\aarch64-unknown-linux-musl\release\yed`
-- `target\armv7-unknown-linux-musleabihf\release\yed`
+- `target\aarch64-unknown-linux-musl\release\yaml_master`
+- `target\armv7-unknown-linux-musleabihf\release\yaml_master`
 
 **한 번에 여러 타깃 (PowerShell):**
 
@@ -62,19 +62,20 @@ PowerShell에서 프로젝트 루트로 이동한 뒤:
 
 ```powershell
 # 1. 이미지 빌드
-docker build -f docker/Dockerfile.musl -t yed-musl .
+docker build -f docker/Dockerfile.musl -t yaml-master-musl .
 
 # 2. 컨테이너 실행 → 바이너리가 target 폴더로 복사됨
-docker run --rm -v "${PWD}\target:/work/output" yed-musl
+docker run --rm -v "${PWD}\target:/work/output" yaml-master-musl
 ```
 
-바이너리 위치: `target\x86_64-unknown-linux-musl\release\yed`
+바이너리 위치: `target\x86_64-unknown-linux-musl\release\yaml_master`
 
 ### Windows에서 자주 나오는 상황
 
 | 증상 | 확인할 것 |
 |------|------------|
 | `error: linker 'cc' not found` 또는 toolchain 관련 오류 | **cross**를 쓰고 있는지 확인. Windows에서는 `cargo build --target x86_64-unknown-linux-musl`만 하면 실패함. `cross build ...` 사용. |
+| `GLIBC_2.28' not found` (libc, quote, proc-macro2 등 빌드 스크립트) | **x86_64 / ARM 모두** 이 프로젝트의 **Cross.toml**이 Debian Bookworm 기반 커스텀 이미지를 쓰도록 되어 있음. `cross build --release --target x86_64-unknown-linux-musl` 또는 `aarch64-unknown-linux-musl`, `armv7-unknown-linux-musleabihf` 그대로 다시 실행. |
 | `Cannot connect to the Docker daemon` | Docker Desktop이 실행 중인지 확인. 재시작 후 다시 시도. |
 | `cross` 설치 실패 (Rust 버전) | `rustup update` 후 `cargo install cross` 다시 실행. |
 | `toolchain 'stable-x86_64-unknown-linux-gnu' may not be able to run on this system` | Windows에서 cross가 Linux 툴체인을 쓰기 위해 필요함. 아래 명령 한 번 실행 후 다시 `cross build ...` 실행. |
@@ -130,7 +131,7 @@ sudo pacman -S musl
 cargo build --release --target x86_64-unknown-linux-musl
 ```
 
-결과: `target/x86_64-unknown-linux-musl/release/yed`
+결과: `target/x86_64-unknown-linux-musl/release/yaml_master`
 
 ### 1-2. 도커로 x86_64 musl 빌드 (cross 사용)
 
@@ -144,7 +145,7 @@ cargo install cross
 cross build --release --target x86_64-unknown-linux-musl
 ```
 
-결과: `target/x86_64-unknown-linux-musl/release/yed`
+결과: `target/x86_64-unknown-linux-musl/release/yaml_master`
 
 ### 1-3. 도커만 사용 (Dockerfile로 직접 빌드)
 
@@ -152,17 +153,17 @@ cross build --release --target x86_64-unknown-linux-musl
 
 ```bash
 # 프로젝트 루트에서 (Linux / macOS / WSL)
-docker build -f docker/Dockerfile.musl -t yed-musl .
-docker run --rm -v "${PWD}/target:/work/output" yed-musl
+docker build -f docker/Dockerfile.musl -t yaml-master-musl .
+docker run --rm -v "${PWD}/target:/work/output" yaml-master-musl
 ```
 
 ```powershell
 # Windows PowerShell
-docker build -f docker/Dockerfile.musl -t yed-musl .
-docker run --rm -v "${PWD}\target:/work/output" yed-musl
+docker build -f docker/Dockerfile.musl -t yaml-master-musl .
+docker run --rm -v "${PWD}\target:/work/output" yaml-master-musl
 ```
 
-결과: `target/x86_64-unknown-linux-musl/release/yed`
+결과: `target/x86_64-unknown-linux-musl/release/yaml_master`
 
 ---
 
@@ -173,12 +174,12 @@ docker run --rm -v "${PWD}\target:/work/output" yed-musl
 Raspberry Pi 4/5, ARM 서버 등에서:
 
 ```bash
-git clone https://github.com/yourusername/yed.git
-cd yed
+git clone https://github.com/yourusername/yaml_master.git
+cd yaml_master
 cargo build --release
 ```
 
-바이너리: `target/release/yed` (호스트가 aarch64면 aarch64용으로 빌드됨).
+바이너리: `target/release/yaml_master` (호스트가 aarch64면 aarch64용으로 빌드됨).
 
 ### 2-2. x86/Windows/macOS에서 ARM용 크로스 빌드 (도커 + cross)
 
@@ -196,8 +197,8 @@ cross build --release --target armv7-unknown-linux-musleabihf
 
 결과:
 
-- `target/aarch64-unknown-linux-musl/release/yed`
-- `target/armv7-unknown-linux-musleabihf/release/yed`
+- `target/aarch64-unknown-linux-musl/release/yaml_master`
+- `target/armv7-unknown-linux-musleabihf/release/yaml_master`
 
 ---
 
@@ -244,10 +245,10 @@ Windows용 Linux musl 빌드:
 ## 5. 정적 링크 확인 (Linux musl)
 
 ```bash
-file target/x86_64-unknown-linux-musl/release/yed
+file target/x86_64-unknown-linux-musl/release/yaml_master
 # 예: ELF 64-bit LSB executable, x86-64, statically linked, ...
 
-ldd target/x86_64-unknown-linux-musl/release/yed
+ldd target/x86_64-unknown-linux-musl/release/yaml_master
 # "not a dynamic executable" 이면 정적 링크된 것.
 ```
 

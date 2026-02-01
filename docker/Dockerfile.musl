@@ -1,8 +1,8 @@
-# yed - Linux x86_64 musl static binary (Docker only, no cross)
+# yaml_master - Linux x86_64 musl static binary (Docker only, no cross)
 # Usage:
-#   docker build -f docker/Dockerfile.musl -t yed-musl .
-#   docker run --rm -v "%cd%\target:/work/target" yed-musl
-#   Binary: target/x86_64-unknown-linux-musl/release/yed
+#   docker build -f docker/Dockerfile.musl -t yaml-master-musl .
+#   docker run --rm -v "%cd%\target:/work/target" yaml-master-musl
+#   Binary: target/x86_64-unknown-linux-musl/release/yaml_master
 
 FROM rust:1.75-bookworm
 

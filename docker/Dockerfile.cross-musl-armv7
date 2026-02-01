@@ -1,0 +1,19 @@
+# cross용 armv7-unknown-linux-musleabihf (glibc 2.31+ 로 빌드 스크립트 GLIBC 오류 방지)
+# musl.cc 툴체인 사용.
+
+FROM rust:1.75-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -sSL https://musl.cc/arm-linux-musleabihf-cross.tgz | tar xz -C /usr/local \
+    && ln -sf /usr/local/arm-linux-musleabihf-cross/bin/arm-linux-musleabihf-gcc /usr/local/bin/
+
+ENV PATH="/usr/local/arm-linux-musleabihf-cross/bin:${PATH}" \
+    CARGO_TARGET_ARMV7_UNKNOWN_LINUX_MUSLEABIHF_LINKER="arm-linux-musleabihf-gcc" \
+    CC_armv7_unknown_linux_musleabihf="arm-linux-musleabihf-gcc" \
+    CXX_armv7_unknown_linux_musleabihf="arm-linux-musleabihf-g++" \
+    AR_armv7_unknown_linux_musleabihf="arm-linux-musleabihf-ar"
+
+RUN rustup target add armv7-unknown-linux-musleabihf

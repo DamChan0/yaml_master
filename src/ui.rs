@@ -5,22 +5,36 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Mode, RowHit};
+use crate::app::{App, Mode, PickerEntry, RowHit};
 
 pub fn draw(frame: &mut Frame<'_>, app: &mut App) -> Vec<RowHit> {
     let size = frame.size();
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
+    let has_parse_error = !app.is_file_picker() && app.parse_error.is_some();
+    let constraints: Vec<Constraint> = if has_parse_error {
+        vec![
+            Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(1),
-        ])
+        ]
+    } else {
+        vec![
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ]
+    };
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints(&constraints)
         .split(size);
 
-    let status_area = layout[0];
-    let body_area = layout[1];
-    let help_area = layout[2];
+    let (status_area, body_area, help_area) = if has_parse_error {
+        draw_parse_error(frame, app, layout[0]);
+        (layout[1], layout[2], layout[3])
+    } else {
+        (layout[0], layout[1], layout[2])
+    };
 
     let body_layout = Layout::default()
         .direction(Direction::Horizontal)
@@ -39,23 +53,41 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) -> Vec<RowHit> {
     hits
 }
 
+fn draw_parse_error(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let msg = app
+        .parse_error
+        .as_deref()
+        .unwrap_or("")
+        .chars()
+        .take(area.width as usize)
+        .collect::<String>();
+    let line = Line::from(Span::styled(
+        format!("PARSE ERROR: {}", msg),
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+    ));
+    let paragraph = Paragraph::new(line);
+    frame.render_widget(paragraph, area);
+}
+
 fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     if app.is_file_picker() {
-        let dir = std::env::current_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|_| "?".to_string());
+        let dir = app
+            .file_picker
+            .as_ref()
+            .map(|p| p.current_dir.display().to_string())
+            .unwrap_or_else(|| "?".to_string());
         let text = Line::from(vec![
             Span::styled("DIR ", Style::default().fg(Color::Yellow)),
             Span::raw(dir),
             Span::raw("  "),
-            Span::styled("Select a YAML file (click or Enter)", Style::default().fg(Color::Gray)),
+            Span::styled(".. = up  Enter = open  q = quit", Style::default().fg(Color::Gray)),
         ]);
         let paragraph = Paragraph::new(text).style(Style::default().fg(Color::White));
         frame.render_widget(paragraph, area);
         return;
     }
     let (path, depth, kind, preview) = app.status_fields();
-    let text = Line::from(vec![
+    let mut spans = vec![
         Span::styled("PATH ", Style::default().fg(Color::Yellow)),
         Span::raw(path),
         Span::raw("  "),
@@ -67,7 +99,30 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
         Span::raw("  "),
         Span::styled("VALUE ", Style::default().fg(Color::Yellow)),
         Span::raw(preview),
-    ]);
+    ];
+    if let Some(_) = app.search_query.as_ref() {
+        let total = app.matches.len();
+        let current = app
+            .matches
+            .iter()
+            .position(|&i| i == app.selection)
+            .map(|p| p + 1)
+            .unwrap_or(0);
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            "Search ",
+            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+        ));
+        if total == 0 {
+            spans.push(Span::styled(
+                "0/0",
+                Style::default().fg(Color::Gray),
+            ));
+        } else {
+            spans.push(Span::raw(format!("{}/{}", current, total)));
+        }
+    }
+    let text = Line::from(spans);
     let paragraph = Paragraph::new(text).style(Style::default().fg(Color::White));
     frame.render_widget(paragraph, area);
 }
@@ -79,7 +134,7 @@ fn draw_file_picker(frame: &mut Frame<'_>, app: &mut App, area: Rect) -> Vec<Row
         None => return hits,
     };
     let available_height = area.height.saturating_sub(2) as usize;
-    let len = picker.paths.len();
+    let len = picker.entries.len();
     if len == 0 {
         let block = Block::default().title("Select file").borders(Borders::ALL);
         let paragraph = Paragraph::new("No .yaml or .yml files in current directory.")
@@ -94,19 +149,36 @@ fn draw_file_picker(frame: &mut Frame<'_>, app: &mut App, area: Rect) -> Vec<Row
         .min(len.saturating_sub(available_height));
     let end = (start + available_height).min(len);
     let mut lines = Vec::new();
-    for (idx, path) in picker.paths.iter().enumerate().take(end).skip(start) {
-        let name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("?");
+    for (idx, entry) in picker.entries.iter().enumerate().take(end).skip(start) {
+        let (name, is_dir) = match entry {
+            PickerEntry::Parent => ("..".to_string(), true),
+            PickerEntry::Dir(p) => (
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .map(|s| format!("{}/", s))
+                    .unwrap_or_else(|| "?/".to_string()),
+                true,
+            ),
+            PickerEntry::File(p) => (
+                p.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("?")
+                    .to_string(),
+                false,
+            ),
+        };
         let mut style = Style::default();
         if idx == app.selection {
             style = style
                 .fg(Color::Black)
                 .bg(Color::Cyan)
                 .add_modifier(Modifier::BOLD);
+        } else if app.hover_row == Some(idx) {
+            style = style.bg(Color::DarkGray);
+        } else if is_dir {
+            style = style.fg(Color::Yellow);
         }
-        lines.push(Line::from(Span::styled(name.to_string(), style)));
+        lines.push(Line::from(Span::styled(name.clone(), style)));
         let row_y = area.y + 1 + (idx - start) as u16;
         let key_end = name.width().saturating_add(2);
         hits.push(RowHit {
@@ -116,7 +188,9 @@ fn draw_file_picker(frame: &mut Frame<'_>, app: &mut App, area: Rect) -> Vec<Row
             key_x_end: area.x + key_end as u16,
         });
     }
-    let block = Block::default().title("Select file (.yaml / .yml)").borders(Borders::ALL);
+    let block = Block::default()
+        .title("Select file (.. = parent, dir/ = enter, .yaml/.yml = open)")
+        .borders(Borders::ALL);
     let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
     frame.render_widget(paragraph, area);
     hits
@@ -125,9 +199,50 @@ fn draw_file_picker(frame: &mut Frame<'_>, app: &mut App, area: Rect) -> Vec<Row
 fn draw_tree(frame: &mut Frame<'_>, app: &mut App, area: Rect) -> Vec<RowHit> {
     let mut hits = Vec::new();
     let available_height = area.height.saturating_sub(2) as usize;
+
+    if let Some(raw_lines) = app.raw_lines() {
+        let len = raw_lines.len();
+        if len == 0 {
+            let block = Block::default().title("Raw (parse error - fix and Ctrl+s)").borders(Borders::ALL);
+            let paragraph = Paragraph::new("Empty file.").block(block).style(Style::default().fg(Color::Gray));
+            frame.render_widget(paragraph, area);
+            return hits;
+        }
+        let start = app.scroll;
+        let end = (start + available_height).min(len);
+        let mut lines = Vec::new();
+        for (idx, line_str) in raw_lines.iter().enumerate().take(end).skip(start) {
+            let line_num = format!("{:4} ", idx + 1);
+            let mut style = Style::default();
+            if idx == app.selection {
+                style = style
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD);
+            } else if app.hover_row == Some(idx) {
+                style = style.bg(Color::DarkGray);
+            }
+            let display = format!("{}{}", line_num, line_str);
+            lines.push(Line::from(Span::styled(display.clone(), style)));
+            let row_y = area.y + 1 + (idx - start) as u16;
+            let key_end = display.width().saturating_add(2);
+            hits.push(RowHit {
+                row_index: idx,
+                y: row_y,
+                key_x_start: area.x + 1,
+                key_x_end: area.x + key_end as u16,
+            });
+        }
+        let block = Block::default()
+            .title("Raw (parse error - e: edit line, Ctrl+s: save & re-parse)")
+            .borders(Borders::ALL);
+        let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
+        frame.render_widget(paragraph, area);
+        return hits;
+    }
+
     let start = app.scroll;
     let end = (start + available_height).min(app.visible.len());
-
     let mut lines = Vec::new();
     for (idx, row) in app.visible.iter().enumerate().take(end).skip(start) {
         let indent = row.depth * 2;
@@ -157,6 +272,8 @@ fn draw_tree(frame: &mut Frame<'_>, app: &mut App, area: Rect) -> Vec<RowHit> {
                 .fg(Color::Black)
                 .bg(Color::Cyan)
                 .add_modifier(Modifier::BOLD);
+        } else if app.hover_row == Some(idx) {
+            style = style.bg(Color::DarkGray);
         }
 
         lines.push(Line::from(Span::styled(line.clone(), style)));
@@ -180,12 +297,16 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let mut lines = Vec::new();
     if app.is_file_picker() {
         if let Some(picker) = &app.file_picker {
-            if app.selection < picker.paths.len() {
-                let path = &picker.paths[app.selection];
-                lines.push(Line::from(format!("Path: {}", path.display())));
+            lines.push(Line::from(format!("Dir: {}", picker.current_dir.display())));
+            if app.selection < picker.entries.len() {
+                let hint = match &picker.entries[app.selection] {
+                    PickerEntry::Parent => "Enter = go up",
+                    PickerEntry::Dir(_) => "Enter = open folder",
+                    PickerEntry::File(_) => "Enter = open file",
+                };
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    "Click or press Enter to open",
+                    hint,
                     Style::default().fg(Color::Gray),
                 )));
             }
@@ -203,7 +324,7 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
 
     if matches!(
         app.mode,
-        Mode::EditValue | Mode::RenameKey | Mode::AddKey | Mode::AddValue | Mode::SearchInput
+        Mode::EditValue | Mode::RenameKey | Mode::AddKey | Mode::AddValue | Mode::SearchInput | Mode::RawEditLine
     ) {
         lines.push(Line::from(""));
         let input_label = match app.mode {
@@ -212,6 +333,7 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Mode::AddKey => "New Key:",
             Mode::AddValue => "New Value:",
             Mode::SearchInput => "Search:",
+            Mode::RawEditLine => "Edit Line:",
             _ => "Input:",
         };
         lines.push(Line::from(Span::styled(
@@ -249,24 +371,27 @@ fn draw_help(frame: &mut Frame<'_>, app: &App, area: Rect) {
         frame.render_widget(paragraph, area);
         return;
     }
-    let mode_label = match app.mode {
-        Mode::Normal => "NORMAL",
-        Mode::EditValue => "EDIT VALUE",
-        Mode::RenameKey => "RENAME KEY",
-        Mode::AddKey => "ADD KEY",
-        Mode::AddValue => "ADD VALUE",
-        Mode::ConfirmDelete => "CONFIRM",
-        Mode::ConfirmQuit => "CONFIRM",
-        Mode::SearchInput => "SEARCH",
+    let (mode_label, mode_bg) = match app.mode {
+        Mode::Normal => ("NORMAL", Color::Magenta),
+        Mode::EditValue => ("EDIT VALUE", Color::Blue),
+        Mode::RenameKey => ("RENAME KEY", Color::Yellow),
+        Mode::AddKey => ("ADD KEY", Color::Green),
+        Mode::AddValue => ("ADD VALUE", Color::LightGreen),
+        Mode::ConfirmDelete => ("CONFIRM", Color::Red),
+        Mode::ConfirmQuit => ("CONFIRM", Color::Red),
+        Mode::ConfirmOpenAnother => ("CONFIRM", Color::Red),
+        Mode::ConfirmRawDeleteLine => ("CONFIRM", Color::Red),
+        Mode::SearchInput => ("SEARCH", Color::Cyan),
+        Mode::RawEditLine => ("EDIT LINE", Color::LightCyan),
     };
     let mode_span = Span::styled(
         format!(" {} ", mode_label),
         Style::default()
             .fg(Color::White)
-            .bg(Color::Magenta)
+            .bg(mode_bg)
             .add_modifier(Modifier::BOLD),
     );
-    let help_text = " j/k:move h/l:fold Enter:toggle e:edit r:rename a:add d:del y:copy /:search Ctrl+s:save q:quit";
+    let help_text = " j/k:move h/l:fold Enter:toggle e:edit r:rename a:add Shift+A:add object d:del Shift+Del:del line y:copy /:search Ctrl+s:save Ctrl+o:open another q:quit";
     let line = Line::from(vec![
         mode_span,
         Span::raw(" "),
@@ -287,6 +412,10 @@ fn draw_overlay(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 Some("Quit? (y/n)".to_string())
             }
         }
+        Mode::ConfirmOpenAnother => {
+            Some("Open another file? Unsaved changes will be lost. (y/n)".to_string())
+        }
+        Mode::ConfirmRawDeleteLine => Some("Delete this line? (y/n)".to_string()),
         _ => None,
     };
     if let Some(message) = confirm_message {
