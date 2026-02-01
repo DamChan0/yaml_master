@@ -1,18 +1,18 @@
 [package]
-name = "yed"
+name = "yaml_master"
 version = "0.1.0"
 edition = "2021"
 description = "A fast, terminal-based YAML editor with vim-like keybindings"
 license = "MIT"
-repository = "https://github.com/yourusername/yed"
-homepage = "https://github.com/yourusername/yed"
+repository = "https://github.com/DamChan0/yaml_master"
+homepage = "https://github.com/DamChan0/yaml_master"
 keywords = ["yaml", "editor", "tui", "cli", "vim"]
 categories = ["command-line-utilities", "text-editors"]
 readme = "README.md"
 rust-version = "1.70"
 
 [[bin]]
-name = "yed"
+name = "yaml_master"
 path = "src/main.rs"
 
 [dependencies]

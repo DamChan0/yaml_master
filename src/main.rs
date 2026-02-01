@@ -23,18 +23,14 @@ use crate::app::App;
 #[derive(Parser)]
 #[command(name = "yed", version, about = "YAML TUI editor")]
 struct Cli {
+    /// YAML file to open. If omitted, TUI opens with a file list to select from (current directory).
     path: Option<PathBuf>,
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let Some(path) = cli.path else {
-        eprintln!("Usage: yed <path-to-yaml>");
-        std::process::exit(1);
-    };
-
     let mut terminal = init_terminal()?;
-    let result = run_app(&mut terminal, path);
+    let result = run_app(&mut terminal, cli.path);
     restore_terminal(&mut terminal)?;
     if let Err(err) = result {
         eprintln!("{err}");
@@ -63,14 +59,23 @@ fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) 
 
 fn run_app(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    path: PathBuf,
+    path: Option<PathBuf>,
 ) -> Result<()> {
-    let mut app = match App::new(&path) {
-        Ok(app) => app,
-        Err(err) => {
-            show_fatal_error(terminal, &err.to_string())?;
-            return Ok(());
-        }
+    let mut app = match path {
+        Some(ref p) => match App::new(p) {
+            Ok(a) => a,
+            Err(err) => {
+                show_fatal_error(terminal, &err.to_string())?;
+                return Ok(());
+            }
+        },
+        None => match App::new_for_picker() {
+            Ok(a) => a,
+            Err(err) => {
+                show_fatal_error(terminal, &err.to_string())?;
+                return Ok(());
+            }
+        },
     };
     loop {
         app.update_toast();

@@ -107,6 +107,14 @@ impl YamlModel {
         })
     }
 
+    /// Empty model for file picker state (no file loaded yet).
+    pub fn empty() -> Self {
+        Self {
+            doc: Yaml::Null,
+            path: String::new(),
+        }
+    }
+
     pub fn save(&self) -> Result<()> {
         let mut out = String::new();
         let mut emitter = YamlEmitter::new(&mut out);

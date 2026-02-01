@@ -1,5 +1,6 @@
 use std::collections::HashSet;
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -99,6 +100,11 @@ pub struct RowHit {
     pub key_x_end: u16,
 }
 
+#[derive(Clone, Debug)]
+pub struct FilePickerState {
+    pub paths: Vec<PathBuf>,
+}
+
 pub struct App {
     pub model: YamlModel,
     pub mode: Mode,
@@ -115,6 +121,9 @@ pub struct App {
     pub search_query: Option<String>,
     pub matches: Vec<usize>,
     pub vim: VimInputHandler,
+    pub file_picker: Option<FilePickerState>,
+    /// After right-click, ignore 'a'/'r' for a short time (terminal often pastes on right-click).
+    pub right_click_ignore_until: Option<Instant>,
 }
 
 impl App {
@@ -140,7 +149,68 @@ impl App {
             search_query: None,
             matches: Vec::new(),
             vim: VimInputHandler::new(),
+            file_picker: None,
+            right_click_ignore_until: None,
         })
+    }
+
+    /// Create app in file picker mode (no file loaded). Lists .yaml/.yml in current directory.
+    pub fn new_for_picker() -> Result<Self> {
+        let model = YamlModel::empty();
+        let mut expanded = HashSet::new();
+        expanded.insert(String::new());
+        let tree_root = model.build_tree();
+        let visible = flatten_visible(&tree_root, &expanded, None);
+        let paths = list_yaml_files_in_current_dir()?;
+        Ok(Self {
+            model,
+            mode: Mode::Normal,
+            selection: 0,
+            scroll: 0,
+            expanded,
+            visible,
+            tree_root,
+            hit_map: Vec::new(),
+            dirty: false,
+            toast: None,
+            input: InputLine::new(),
+            pending_key: None,
+            search_query: None,
+            matches: Vec::new(),
+            vim: VimInputHandler::new(),
+            file_picker: Some(FilePickerState { paths }),
+            right_click_ignore_until: None,
+        })
+    }
+
+    /// Load a file and switch from file picker to editor.
+    pub fn open_file(&mut self, path: PathBuf) -> Result<()> {
+        let model = YamlModel::load(&path)?;
+        let mut expanded = HashSet::new();
+        expanded.insert(String::new());
+        let tree_root = model.build_tree();
+        let visible = flatten_visible(&tree_root, &expanded, None);
+        self.model = model;
+        self.tree_root = tree_root;
+        self.visible = visible;
+        self.expanded = expanded;
+        self.selection = 0;
+        self.scroll = 0;
+        self.file_picker = None;
+        self.hit_map = Vec::new();
+        self.dirty = false;
+        self.mode = Mode::Normal;
+        self.toast = None;
+        self.input.set(String::new());
+        self.pending_key = None;
+        self.search_query = None;
+        self.matches = Vec::new();
+        self.right_click_ignore_until = None;
+        Ok(())
+    }
+
+    pub fn is_file_picker(&self) -> bool {
+        self.file_picker.is_some()
     }
 
     pub fn rebuild_visible(&mut self) {
@@ -185,6 +255,41 @@ impl App {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent, area_height: usize) -> Result<bool> {
+        use crossterm::event::{KeyCode, KeyModifiers};
+        // After right-click, ignore 'a' and 'r' for 200ms (terminal often pastes on right-click).
+        if self.mode == Mode::Normal
+            && key.modifiers == KeyModifiers::NONE
+            && matches!(key.code, KeyCode::Char('a') | KeyCode::Char('r'))
+        {
+            if let Some(until) = self.right_click_ignore_until {
+                if Instant::now() < until {
+                    return Ok(false);
+                }
+            }
+        }
+        self.right_click_ignore_until = None;
+        if let Some(ref picker) = self.file_picker {
+            match key.code {
+                KeyCode::Enter => {
+                    if self.selection < picker.paths.len() {
+                        let path = picker.paths[self.selection].clone();
+                        if let Err(e) = self.open_file(path) {
+                            self.set_toast(e.to_string());
+                        }
+                    }
+                }
+                KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
+                KeyCode::Char('j') | KeyCode::Down => {
+                    let max_idx = picker.paths.len().saturating_sub(1);
+                    self.selection = (self.selection + 1).min(max_idx);
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.selection = self.selection.saturating_sub(1);
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
         if let Some(action) = self.vim.handle_key(InputContext {
             mode: &self.mode,
             key,
@@ -195,6 +300,40 @@ impl App {
     }
 
     pub fn handle_mouse(&mut self, mouse: MouseEvent, area_height: usize) -> Result<bool> {
+        // Block right-click so it does not trigger selection or other actions.
+        // Also set a short ignore window: many terminals paste on right-click, and the first
+        // character ('a' or 'r') would otherwise trigger Add Key / Rename.
+        if matches!(
+            mouse.kind,
+            MouseEventKind::Down(MouseButton::Right) | MouseEventKind::Up(MouseButton::Right)
+        ) {
+            self.right_click_ignore_until =
+                Some(Instant::now() + Duration::from_millis(200));
+            return Ok(false);
+        }
+        if let Some(ref picker) = self.file_picker {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    self.selection = self.selection.saturating_sub(1);
+                }
+                MouseEventKind::ScrollDown => {
+                    let max_idx = picker.paths.len().saturating_sub(1);
+                    self.selection = (self.selection + 1).min(max_idx);
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(hit) = self.hit_map.iter().find(|hit| hit.y == mouse.row) {
+                        if hit.row_index < picker.paths.len() {
+                            let path = picker.paths[hit.row_index].clone();
+                            if let Err(e) = self.open_file(path) {
+                                self.set_toast(e.to_string());
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
         match mouse.kind {
             MouseEventKind::ScrollUp => {
                 self.scroll = self.scroll.saturating_sub(1);
@@ -587,4 +726,24 @@ impl App {
             }
         }
     }
+}
+
+fn list_yaml_files_in_current_dir() -> Result<Vec<PathBuf>> {
+    let current = std::env::current_dir()?;
+    let mut paths: Vec<PathBuf> = fs::read_dir(current)?
+        .filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let p = e.path();
+            if p.is_file() {
+                let ext = p.extension()?;
+                let ext = ext.to_str()?;
+                if ext.eq_ignore_ascii_case("yaml") || ext.eq_ignore_ascii_case("yml") {
+                    return Some(p);
+                }
+            }
+            None
+        })
+        .collect();
+    paths.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
+    Ok(paths)
 }

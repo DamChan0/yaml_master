@@ -28,7 +28,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) -> Vec<RowHit> {
         .split(body_area);
 
     draw_status(frame, app, status_area);
-    let hits = draw_tree(frame, app, body_layout[0]);
+    let hits = if app.is_file_picker() {
+        draw_file_picker(frame, app, body_layout[0])
+    } else {
+        draw_tree(frame, app, body_layout[0])
+    };
     draw_details(frame, app, body_layout[1]);
     draw_help(frame, app, help_area);
     draw_overlay(frame, app, size);
@@ -36,6 +40,20 @@ pub fn draw(frame: &mut Frame<'_>, app: &mut App) -> Vec<RowHit> {
 }
 
 fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    if app.is_file_picker() {
+        let dir = std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| "?".to_string());
+        let text = Line::from(vec![
+            Span::styled("DIR ", Style::default().fg(Color::Yellow)),
+            Span::raw(dir),
+            Span::raw("  "),
+            Span::styled("Select a YAML file (click or Enter)", Style::default().fg(Color::Gray)),
+        ]);
+        let paragraph = Paragraph::new(text).style(Style::default().fg(Color::White));
+        frame.render_widget(paragraph, area);
+        return;
+    }
     let (path, depth, kind, preview) = app.status_fields();
     let text = Line::from(vec![
         Span::styled("PATH ", Style::default().fg(Color::Yellow)),
@@ -52,6 +70,56 @@ fn draw_status(frame: &mut Frame<'_>, app: &App, area: Rect) {
     ]);
     let paragraph = Paragraph::new(text).style(Style::default().fg(Color::White));
     frame.render_widget(paragraph, area);
+}
+
+fn draw_file_picker(frame: &mut Frame<'_>, app: &mut App, area: Rect) -> Vec<RowHit> {
+    let mut hits = Vec::new();
+    let picker = match &app.file_picker {
+        Some(p) => p,
+        None => return hits,
+    };
+    let available_height = area.height.saturating_sub(2) as usize;
+    let len = picker.paths.len();
+    if len == 0 {
+        let block = Block::default().title("Select file").borders(Borders::ALL);
+        let paragraph = Paragraph::new("No .yaml or .yml files in current directory.")
+            .block(block)
+            .style(Style::default().fg(Color::Gray));
+        frame.render_widget(paragraph, area);
+        return hits;
+    }
+    let start = (app.selection + 1)
+        .saturating_sub(available_height)
+        .max(0)
+        .min(len.saturating_sub(available_height));
+    let end = (start + available_height).min(len);
+    let mut lines = Vec::new();
+    for (idx, path) in picker.paths.iter().enumerate().take(end).skip(start) {
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("?");
+        let mut style = Style::default();
+        if idx == app.selection {
+            style = style
+                .fg(Color::Black)
+                .bg(Color::Cyan)
+                .add_modifier(Modifier::BOLD);
+        }
+        lines.push(Line::from(Span::styled(name.to_string(), style)));
+        let row_y = area.y + 1 + (idx - start) as u16;
+        let key_end = name.width().saturating_add(2);
+        hits.push(RowHit {
+            row_index: idx,
+            y: row_y,
+            key_x_start: area.x + 1,
+            key_x_end: area.x + key_end as u16,
+        });
+    }
+    let block = Block::default().title("Select file (.yaml / .yml)").borders(Borders::ALL);
+    let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
+    frame.render_widget(paragraph, area);
+    hits
 }
 
 fn draw_tree(frame: &mut Frame<'_>, app: &mut App, area: Rect) -> Vec<RowHit> {
@@ -110,6 +178,22 @@ fn draw_tree(frame: &mut Frame<'_>, app: &mut App, area: Rect) -> Vec<RowHit> {
 fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let block = Block::default().title("Details").borders(Borders::ALL);
     let mut lines = Vec::new();
+    if app.is_file_picker() {
+        if let Some(picker) = &app.file_picker {
+            if app.selection < picker.paths.len() {
+                let path = &picker.paths[app.selection];
+                lines.push(Line::from(format!("Path: {}", path.display())));
+                lines.push(Line::from(""));
+                lines.push(Line::from(Span::styled(
+                    "Click or press Enter to open",
+                    Style::default().fg(Color::Gray),
+                )));
+            }
+        }
+        let paragraph = Paragraph::new(lines).block(block).wrap(Wrap { trim: false });
+        frame.render_widget(paragraph, area);
+        return;
+    }
     if let Some(row) = app.current_row() {
         lines.push(Line::from(format!("Path: {}", row.path.dot_path())));
         lines.push(Line::from(format!("Depth: {}", row.path.depth())));
@@ -147,6 +231,24 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn draw_help(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    if app.is_file_picker() {
+        let mode_span = Span::styled(
+            " FILE PICKER ",
+            Style::default()
+                .fg(Color::White)
+                .bg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        );
+        let help_text = " j/k:move Enter:open q:quit";
+        let line = Line::from(vec![
+            mode_span,
+            Span::raw(" "),
+            Span::styled(help_text, Style::default().fg(Color::Gray)),
+        ]);
+        let paragraph = Paragraph::new(line);
+        frame.render_widget(paragraph, area);
+        return;
+    }
     let mode_label = match app.mode {
         Mode::Normal => "NORMAL",
         Mode::EditValue => "EDIT VALUE",

@@ -1,4 +1,4 @@
-# yed - YAML Editor TUI
+# yaml_master - YAML Editor TUI
 
 A fast, terminal-based YAML editor with vim-like keybindings. Navigate, edit, and manage YAML files directly from your terminal.
 
@@ -21,32 +21,32 @@ A fast, terminal-based YAML editor with vim-like keybindings. Navigate, edit, an
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/yed.git
-cd yed
+git clone https://github.com/DamChan0/yaml_master.git
+cd yaml_master
 
 # Build release binary
 cargo build --release
 
-# The binary will be at target/release/yed (or yed.exe on Windows)
+# The binary will be at target/release/yaml_master (or yaml_master.exe on Windows)
 ```
 
 ### Using Cargo
 
 ```bash
-cargo install yed
+cargo install yaml_master
 ```
 
 ### Pre-built Binaries
 
-Download the latest release from the [Releases](https://github.com/yourusername/yed/releases) page.
+Download the latest release from the [Releases](https://github.com/DamChan0/yaml_master/releases) page.
 
 | Platform | Architecture | Download | Typical Use |
 |----------|--------------|----------|-------------|
-| Linux | x86_64 (musl) | `yed-linux-x86_64-musl` | PC, servers |
+| Linux | x86_64 (musl) | `yaml_master-linux-x86_64-musl` | PC, servers |
 | Linux | aarch64 (musl) | `yed-linux-aarch64-musl` | Raspberry Pi 4/5, ARM servers |
-| Linux | aarch64 (gnu) | `yed-linux-aarch64-gnu` | ARM64 with glibc |
-| Linux | armv7 (musl) | `yed-linux-armv7-musl` | Raspberry Pi 3, 32-bit ARM |
-| Windows | x86_64 | `yed-windows-x86_64.exe` | Windows PC |
+| Linux | aarch64 (gnu) | `yaml_master-linux-aarch64-gnu` | ARM64 with glibc |
+| Linux | armv7 (musl) | `yaml_master-linux-armv7-musl` | Raspberry Pi 3, 32-bit ARM |
+| Windows | x86_64 | `yaml_master-windows-x86_64.exe` | Windows PC |
 | macOS | x86_64 | `yed-macos-x86_64` | Intel Mac |
 | macOS | aarch64 (Apple Silicon) | `yed-macos-aarch64` | M1/M2/M3 Mac |
 
